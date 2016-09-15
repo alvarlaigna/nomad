@@ -1,6 +1,7 @@
 package allocdir
 
 import (
+	"archive/tar"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -108,6 +109,7 @@ type AllocDirFS interface {
 	List(path string) ([]*AllocFileInfo, error)
 	Stat(path string) (*AllocFileInfo, error)
 	ReadAt(path string, offset int64) (io.ReadCloser, error)
+	Snapshot(w io.Writer) error
 	BlockUntilExists(path string, t *tomb.Tomb) chan error
 	ChangeEvents(path string, curOffset int64, t *tomb.Tomb) (*watch.FileChanges, error)
 }
@@ -125,6 +127,53 @@ func NewAllocDir(allocDir string, maxSize int) *AllocDir {
 	}
 	d.SharedDir = filepath.Join(d.AllocDir, SharedAllocName)
 	return d
+}
+
+func (d *AllocDir) Snapshot(w io.Writer) error {
+	allocDataDir := filepath.Join(d.SharedDir, "data")
+	rootPaths := []string{allocDataDir}
+	for _, path := range d.TaskDirs {
+		taskLocaPath := filepath.Join(path, "local")
+		rootPaths = append(rootPaths, taskLocaPath)
+	}
+
+	tw := tar.NewWriter(w)
+	defer tw.Close()
+
+	walkFn := func(path string, fileInfo os.FileInfo, err error) error {
+		relPath, err := filepath.Rel(d.AllocDir, path)
+		if err != nil {
+			return err
+		}
+		if fileInfo.IsDir() {
+			return nil
+		}
+		hdr := &tar.Header{
+			Name: relPath,
+			Mode: int64(fileInfo.Mode()),
+			Size: fileInfo.Size(),
+		}
+		tw.WriteHeader(hdr)
+
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		if _, err := io.Copy(tw, file); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	for _, path := range rootPaths {
+		if err := filepath.Walk(path, walkFn); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // Tears down previously build directory structure.
