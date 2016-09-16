@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -115,24 +116,24 @@ func TestRPCProxy_AddPrimaryServer(t *testing.T) {
 	}
 
 	s1Endpoint := makeServerEndpointName()
-	s1 := p.AddPrimaryServer(s1Endpoint)
+	s1, ok := p.AddPrimaryServer(s1Endpoint)
 	num = p.NumServers()
 	if num != 1 {
 		t.Fatalf("Expected one server")
 	}
-	if s1 == nil {
+	if s1 == nil || !ok {
 		t.Fatalf("bad")
 	}
 	if s1.Name != s1Endpoint {
 		t.Fatalf("bad")
 	}
 
-	s1 = p.AddPrimaryServer(s1Endpoint)
+	s1, ok = p.AddPrimaryServer(s1Endpoint)
 	num = p.NumServers()
 	if num != 1 {
 		t.Fatalf("Expected one server (still)")
 	}
-	if s1 == nil {
+	if s1 == nil || ok {
 		t.Fatalf("bad")
 	}
 	if s1.Name != s1Endpoint {
@@ -140,12 +141,12 @@ func TestRPCProxy_AddPrimaryServer(t *testing.T) {
 	}
 
 	s2Endpoint := makeServerEndpointName()
-	s2 := p.AddPrimaryServer(s2Endpoint)
+	s2, ok := p.AddPrimaryServer(s2Endpoint)
 	num = p.NumServers()
 	if num != 2 {
 		t.Fatalf("Expected two servers")
 	}
-	if s2 == nil {
+	if s2 == nil || !ok {
 		t.Fatalf("bad")
 	}
 	if s2.Name != s2Endpoint {
@@ -224,8 +225,8 @@ func TestRPCProxy_NotifyFailedServer(t *testing.T) {
 
 	// Try notifying for a server that is not managed by RPCProxy
 	s1Endpoint := makeServerEndpointName()
-	s1 := p.AddPrimaryServer(s1Endpoint)
-	if s1 == nil {
+	s1, ok := p.AddPrimaryServer(s1Endpoint)
+	if s1 == nil || !ok {
 		t.Fatalf("bad")
 	}
 	if p.NumServers() != 1 {
@@ -236,12 +237,12 @@ func TestRPCProxy_NotifyFailedServer(t *testing.T) {
 		t.Fatalf("bad")
 	}
 	p.NotifyFailedServer(s1)
-	s1 = p.AddPrimaryServer(s1Endpoint)
+	s1, _ = p.AddPrimaryServer(s1Endpoint)
 
 	// Test again w/ a server not in the list
 	s2Endpoint := makeServerEndpointName()
-	s2 := p.AddPrimaryServer(s2Endpoint)
-	if s2 == nil {
+	s2, ok := p.AddPrimaryServer(s2Endpoint)
+	if s2 == nil || !ok {
 		t.Fatalf("bad")
 	}
 	if p.NumServers() != 2 {
@@ -257,7 +258,7 @@ func TestRPCProxy_NotifyFailedServer(t *testing.T) {
 	}
 
 	// Re-add s2 so there are two servers in the RPCProxy server list
-	s2 = p.AddPrimaryServer(s2Endpoint)
+	s2, _ = p.AddPrimaryServer(s2Endpoint)
 	if p.NumServers() != 2 {
 		t.Fatalf("Expected two servers")
 	}
@@ -303,8 +304,8 @@ func TestRPCProxy_NumServers(t *testing.T) {
 			t.Fatalf("%d: Expected %d servers", i, num)
 		}
 		serverName := makeServerEndpointName()
-		s := p.AddPrimaryServer(serverName)
-		if s == nil {
+		s, ok := p.AddPrimaryServer(serverName)
+		if s == nil || !ok {
 			t.Fatalf("Expected server from %+q", serverName)
 		}
 		serverList = append(serverList, s)
@@ -374,11 +375,11 @@ func TestRPCProxy_RemoveServer(t *testing.T) {
 
 	// Test removing server before its added
 	s1Endpoint := makeServerEndpointName()
-	s1 := p.AddPrimaryServer(s1Endpoint)
+	s1, ok := p.AddPrimaryServer(s1Endpoint)
 	if p.NumServers() != 1 {
 		t.Fatalf("bad")
 	}
-	if s1 == nil || s1.Name != s1Endpoint {
+	if s1 == nil || s1.Name != s1Endpoint || !ok {
 		t.Fatalf("Expected s1 server: %+q", s1.Name)
 	}
 	s1 = p.FindServer()
@@ -400,11 +401,11 @@ func TestRPCProxy_RemoveServer(t *testing.T) {
 	}
 
 	s2Endpoint := makeServerEndpointName()
-	s2 := p.AddPrimaryServer(s2Endpoint)
+	s2, ok := p.AddPrimaryServer(s2Endpoint)
 	if p.NumServers() != 2 {
 		t.Fatalf("bad")
 	}
-	if s2 == nil || s2.Name != s2Endpoint {
+	if s2 == nil || s2.Name != s2Endpoint || !ok {
 		t.Fatalf("Expected s2 server: %+q", s2.Name)
 	}
 	s1 = p.FindServer()
@@ -433,7 +434,7 @@ func TestRPCProxy_RemoveServer(t *testing.T) {
 	servers = append(servers, s2)
 	// Already added two servers above
 	for i := maxServers; i > 2; i-- {
-		server := p.AddPrimaryServer(makeServerEndpointName())
+		server, _ := p.AddPrimaryServer(makeServerEndpointName())
 		servers = append(servers, server)
 	}
 	if p.NumServers() != maxServers {
@@ -536,65 +537,40 @@ func TestRPCProxy_RemoveServer(t *testing.T) {
 // func (l *serverList) cycleServer() (servers []*Server) {
 func TestRPCProxyInternal_cycleServer(t *testing.T) {
 	p := testRPCProxy()
-	l := p.getServerList()
 
 	server0 := &ServerEndpoint{Name: "server1"}
 	server1 := &ServerEndpoint{Name: "server2"}
 	server2 := &ServerEndpoint{Name: "server3"}
-	l.L = append(l.L, server0, server1, server2)
-	p.saveServerList(l)
+	p.activatedList.L = append(p.activatedList.L, server0, server1, server2)
 
-	l = p.getServerList()
-	if len(l.L) != 3 {
-		t.Fatalf("server length incorrect: %d/3", len(l.L))
+	p.activatedList.cycleServer()
+	if len(p.activatedList.L) != 3 {
+		t.Fatalf("server length incorrect: %d/3", len(p.activatedList.L))
 	}
-	if l.L[0] != server0 &&
-		l.L[1] != server1 &&
-		l.L[2] != server2 {
-		t.Fatalf("initial server ordering not correct")
-	}
-
-	l.L = l.cycleServer()
-	if len(l.L) != 3 {
-		t.Fatalf("server length incorrect: %d/3", len(l.L))
-	}
-	if l.L[0] != server1 &&
-		l.L[1] != server2 &&
-		l.L[2] != server0 {
+	if p.activatedList.L[0] != server1 &&
+		p.activatedList.L[1] != server2 &&
+		p.activatedList.L[2] != server0 {
 		t.Fatalf("server ordering after one cycle not correct")
 	}
 
-	l.L = l.cycleServer()
-	if len(l.L) != 3 {
-		t.Fatalf("server length incorrect: %d/3", len(l.L))
+	p.activatedList.cycleServer()
+	if len(p.activatedList.L) != 3 {
+		t.Fatalf("server length incorrect: %d/3", len(p.activatedList.L))
 	}
-	if l.L[0] != server2 &&
-		l.L[1] != server0 &&
-		l.L[2] != server1 {
+	if p.activatedList.L[0] != server2 &&
+		p.activatedList.L[1] != server0 &&
+		p.activatedList.L[2] != server1 {
 		t.Fatalf("server ordering after two cycles not correct")
 	}
 
-	l.L = l.cycleServer()
-	if len(l.L) != 3 {
-		t.Fatalf("server length incorrect: %d/3", len(l.L))
+	p.activatedList.cycleServer()
+	if len(p.activatedList.L) != 3 {
+		t.Fatalf("server length incorrect: %d/3", len(p.activatedList.L))
 	}
-	if l.L[0] != server0 &&
-		l.L[1] != server1 &&
-		l.L[2] != server2 {
+	if p.activatedList.L[0] != server0 &&
+		p.activatedList.L[1] != server1 &&
+		p.activatedList.L[2] != server2 {
 		t.Fatalf("server ordering after three cycles not correct")
-	}
-}
-
-// func (p *RPCProxy) getServerList() serverList {
-func TestRPCProxyInternal_getServerList(t *testing.T) {
-	p := testRPCProxy()
-	l := p.getServerList()
-	if l.L == nil {
-		t.Fatalf("serverList.servers nil")
-	}
-
-	if len(l.L) != 0 {
-		t.Fatalf("serverList.servers length not zero")
 	}
 }
 
@@ -610,6 +586,16 @@ func TestRPCProxyInternal_New(t *testing.T) {
 
 	if p.shutdownCh == nil {
 		t.Fatalf("bad")
+	}
+
+	for _, l := range []*serverList{p.activatedList, p.primaryServers, p.backupServers} {
+		if l == nil {
+			t.Fatalf("serverList nil")
+		}
+
+		if len(l.L) != 0 {
+			t.Fatalf("serverList.servers length not zero")
+		}
 	}
 }
 
@@ -672,31 +658,32 @@ func test_reconcileServerList(maxServers int) (bool, error) {
 	// Update RPCProxy's server list to be "healthy" based on Serf.
 	// Reconcile this with origServers, which is shuffled and has a live
 	// connection, but possibly out of date.
-	origServers := p.getServerList()
-	p.saveServerList(serverList{L: healthyServers})
+	origServers := serverList{L: make([]*ServerEndpoint, len(p.activatedList.L))}
+	copy(origServers.L, p.activatedList.L)
+	p.activatedList = newServerList(healthyServers...)
 
 	// This should always succeed with non-zero server lists
 	if !selectedServerFailed && !p.reconcileServerList(&origServers) &&
-		len(p.getServerList().L) != 0 &&
+		len(p.activatedList.L) != 0 &&
 		len(origServers.L) != 0 {
 		// If the random gods are unfavorable and we end up with zero
 		// length lists, expect things to fail and retry the test.
 		return false, fmt.Errorf("Expected reconcile to succeed: %v %d %d",
 			selectedServerFailed,
-			len(p.getServerList().L),
+			len(p.activatedList.L),
 			len(origServers.L))
 	}
 
 	// If we have zero-length server lists, test succeeded in degenerate
 	// case.
-	if len(p.getServerList().L) == 0 &&
+	if len(p.activatedList.L) == 0 &&
 		len(origServers.L) == 0 {
 		// Failed as expected w/ zero length list
 		return true, nil
 	}
 
 	resultingServerMap := make(map[EndpointKey]bool)
-	for _, s := range p.getServerList().L {
+	for _, s := range p.activatedList.L {
 		resultingServerMap[*s.Key()] = true
 	}
 
@@ -710,7 +697,7 @@ func test_reconcileServerList(maxServers int) (bool, error) {
 	}
 
 	// Test to make sure all healthy servers are in the healthy list.
-	if len(healthyServers) != len(p.getServerList().L) {
+	if len(healthyServers) != len(p.activatedList.L) {
 		return false, fmt.Errorf("Expected healthy map and servers to match: %d/%d", len(healthyServers), len(healthyServers))
 	}
 
@@ -782,36 +769,91 @@ func TestRPCProxyInternal_saveServerList(t *testing.T) {
 	p := testRPCProxy()
 
 	// Initial condition
-	func() {
-		l := p.getServerList()
+	{
+		l := p.activatedList
 		if len(l.L) != 0 {
 			t.Fatalf("RPCProxy.saveServerList failed to load init config")
 		}
 
 		newServer := new(ServerEndpoint)
 		l.L = append(l.L, newServer)
-		p.saveServerList(l)
-	}()
+	}
 
 	// Test that save works
-	func() {
-		l1 := p.getServerList()
+	{
+		l1 := p.activatedList
 		t1NumServers := len(l1.L)
 		if t1NumServers != 1 {
 			t.Fatalf("RPCProxy.saveServerList failed to save mutated config")
 		}
-	}()
+	}
+}
 
-	// Verify mutation w/o a save doesn't alter the original
-	func() {
-		newServer := new(ServerEndpoint)
-		l := p.getServerList()
-		l.L = append(l.L, newServer)
+// TestRPCProxy_Race is meant to be run with -race to find races in rpcproxy
+func TestRPCProxy_Race(t *testing.T) {
+	p := testRPCProxy()
 
-		l_orig := p.getServerList()
-		origNumServers := len(l_orig.L)
-		if origNumServers >= len(l.L) {
-			t.Fatalf("RPCProxy.saveServerList unsaved config overwrote original")
+	randsleep := func() {
+		time.Sleep(time.Duration(rand.Int63n(100)) * time.Microsecond)
+	}
+
+	errs := make(chan string, 100)
+
+	wg := sync.WaitGroup{}
+	m1 := func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			randsleep()
+			p.AddPrimaryServer(fmt.Sprintf("127.0.0.%d", i))
 		}
-	}()
+	}
+
+	m2 := func() {
+		defer wg.Done()
+		for i := 0; i < 150; i += 2 {
+			randsleep()
+			p.AddBackupServer(fmt.Sprintf("127.0.0.%d", i))
+		}
+	}
+
+	m3 := func() {
+		defer wg.Done()
+		for i := 0; i < 10; i++ {
+			randsleep()
+			p.RebalanceServers()
+			randsleep()
+		}
+	}
+
+	r1 := func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			randsleep()
+			if n := p.NumServers(); n > 125 {
+				errs <- fmt.Sprintf("NumServers should never exceed 125; found %d", n)
+			}
+		}
+	}
+
+	r2 := func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			randsleep()
+			p.LeaderAddr()
+		}
+	}
+
+	wg.Add(5)
+	go m1()
+	go m2()
+	go m3()
+	go r1()
+	go r2()
+	wg.Wait()
+
+	select {
+	case err := <-errs:
+		t.Fatalf(err)
+	default:
+	}
 }

@@ -446,7 +446,8 @@ func (c *Client) GetAllocFS(allocID string) (allocdir.AllocDirFS, error) {
 // AddPrimaryServerToRPCProxy adds serverAddr to the RPC Proxy's primary
 // server list.
 func (c *Client) AddPrimaryServerToRPCProxy(serverAddr string) *rpcproxy.ServerEndpoint {
-	return c.rpcProxy.AddPrimaryServer(serverAddr)
+	se, _ := c.rpcProxy.AddPrimaryServer(serverAddr)
+	return se
 }
 
 // restoreState is used to restore our state from the data dir
@@ -1453,12 +1454,19 @@ func (c *Client) setupConsulSyncer() error {
 			},
 		}
 
+		// If we add servers from a non-local DC this will e switched to add it as a backup server
+		addServer := c.rpcProxy.AddPrimaryServer
+
 		nomadServerServiceName := c.config.ConsulConfig.ServerServiceName
 		var mErr multierror.Error
 		const defaultMaxNumNomadServers = 8
 		nomadServerServices := make([]string, 0, defaultMaxNumNomadServers)
 		c.logger.Printf("[DEBUG] client.consul: bootstrap contacting following Consul DCs: %+q", dcs)
-		for _, dc := range dcs {
+		for i, dc := range dcs {
+			if i > 0 {
+				// Non-local DC, add servers as backups
+				addServer = c.rpcProxy.AddBackupServer
+			}
 			consulOpts := &consulapi.QueryOptions{
 				AllowStale: true,
 				Datacenter: dc,
@@ -1467,7 +1475,8 @@ func (c *Client) setupConsulSyncer() error {
 			}
 			consulServices, _, err := consulCatalog.Service(nomadServerServiceName, consul.ServiceTagRPC, consulOpts)
 			if err != nil {
-				mErr.Errors = append(mErr.Errors, fmt.Errorf("unable to query service %+q from Consul datacenter %+q: %v", nomadServerServiceName, dc, err))
+				c.logger.Printf("[WARN] client.consul: unable to query service %+q from Consul dc %q: %v", nomadServerServiceName, dc, err)
+				mErr.Errors = append(mErr.Errors, fmt.Errorf("unable to query service %+q from Consul datacenter %q: %v", nomadServerServiceName, dc, err))
 				continue
 			}
 
@@ -1509,29 +1518,14 @@ func (c *Client) setupConsulSyncer() error {
 		}
 
 		// Log the servers we are adding
-		c.logger.Printf("[DEBUG] client.consul: bootstrap adding following Servers: %q", nomadServerServices)
-
-		c.heartbeatLock.Lock()
-		if c.lastHeartbeatFromQuorum && now.Before(c.consulPullHeartbeatDeadline) {
-			c.heartbeatLock.Unlock()
-			// Common, healthy path
-			if err := c.rpcProxy.SetBackupServers(nomadServerServices); err != nil {
-				return fmt.Errorf("client.consul: unable to set backup servers: %v", err)
+		added := make([]string, 0, len(nomadServerServices))
+		for _, s := range nomadServerServices {
+			if _, ok := addServer(s); ok {
+				added = append(added, s)
 			}
-		} else {
-			c.heartbeatLock.Unlock()
-			// If this Client is talking with a Server that
-			// doesn't have a leader, and we have exceeded the
-			// consulPullHeartbeatDeadline, change the call from
-			// SetBackupServers() to calling AddPrimaryServer()
-			// in order to allow the Clients to randomly begin
-			// considering all known Nomad servers and
-			// eventually, hopefully, find their way to a Nomad
-			// Server that has quorum (assuming Consul has a
-			// server list that is in the majority).
-			for _, s := range nomadServerServices {
-				c.rpcProxy.AddPrimaryServer(s)
-			}
+		}
+		if len(added) > 0 {
+			c.logger.Printf("[INFO] client.consul: bootstrap added following Servers: %q", added)
 		}
 
 		return nil
