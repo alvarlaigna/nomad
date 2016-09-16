@@ -907,7 +907,7 @@ func (c *Client) registerNode() error {
 	node.Status = structs.NodeStatusReady
 	c.configLock.Unlock()
 
-	c.logger.Printf("[DEBUG] client: node registration complete")
+	c.logger.Printf("[INFO] client: node registration complete")
 	if len(resp.EvalIDs) != 0 {
 		c.logger.Printf("[DEBUG] client: %d evaluations triggered by node registration", len(resp.EvalIDs))
 	}
