@@ -1531,6 +1531,18 @@ func (c *Client) setupConsulSyncer() error {
 		return nil
 	}
 	if c.config.ConsulConfig.ClientAutoJoin {
+		// If no initial servers were configured, do a blocking
+		// bootstrap call to try to find servers.
+		//
+		//TODO switch to async bootstrapping and have components that
+		//     talk to servers get notified when servers become available
+		if len(c.config.Servers) == 0 {
+			if err := bootstrapFn(); err != nil {
+				// Only debug level logging as bringing up consul after
+				// nomad isn't a problem. Nomad will retry.
+				c.logger.Printf("[DEBUG] client.consul: initial boostrap failed: %v", err)
+			}
+		}
 		c.consulSyncer.AddPeriodicHandler("Nomad Client Fallback Server Handler", bootstrapFn)
 	}
 
